@@ -9,7 +9,7 @@ const toolbar = $('toolbar');
 const modePill = $('mode-pill');
 const statusBar = $('status-bar');
 const toastBox = $('toast');
-const settings = $('settings-panel');
+const settingsPanel = $('settings-panel');
 const sensitivityInput = $('sensitivity');
 const gravityInput = $('gravity');
 const snapInput = $('snap-mode');
@@ -32,7 +32,8 @@ const clock = new THREE.Clock();
 const keys = new Set();
 const blocks = [];
 const wireGroup = new THREE.Group();
-scene.add(wireGroup);
+const ghostGroup = new THREE.Group();
+scene.add(wireGroup, ghostGroup);
 
 const PARTS = {
   block: { label: 'Block', color: 0x8ca4b7, size: [1, 1, 1], mass: 2 },
@@ -45,22 +46,25 @@ const PARTS = {
   largeEngine: { label: 'Large Engine', color: 0xf27625, size: [1.5, 1, 1.5], mass: 3.2, power: 15 },
   motor: { label: 'Electric Motor', color: 0x59d48b, size: [1, 0.8, 1], mass: 2, power: 10 },
   battery: { label: 'Battery', color: 0x7467d2, size: [1, 1, 1], mass: 1.8, source: true },
-  logic: { label: 'AND Gate', color: 0xc678e8, size: [0.9, 0.9, 0.9], mass: 1, gate: 'and' },
-  button: { label: 'Button', color: 0x35cba5, size: [0.7, 0.4, 0.7], mass: 0.7, source: true },
+  switch: { label: 'Switch', color: 0x35cba5, size: [0.7, 0.4, 0.7], mass: 0.7, source: true },
+  and: { label: 'AND Gate', color: 0xc678e8, size: [0.9, 0.9, 0.9], mass: 1, gate: 'and' },
+  or: { label: 'OR Gate', color: 0xed9b4d, size: [0.9, 0.9, 0.9], mass: 1, gate: 'or' },
+  not: { label: 'NOT Gate', color: 0x55a6f2, size: [0.9, 0.9, 0.9], mass: 1, gate: 'not' },
+  xor: { label: 'XOR Gate', color: 0xf05b9a, size: [0.9, 0.9, 0.9], mass: 1, gate: 'xor' },
 };
-const ORDER = ['block', 'wood', 'metal', 'glass', 'seat', 'wheel', 'engine', 'largeEngine', 'motor', 'battery', 'logic', 'button'];
+const ORDER = ['block', 'wood', 'metal', 'glass', 'seat', 'wheel', 'engine', 'largeEngine', 'motor', 'battery', 'switch', 'and', 'or', 'not', 'xor'];
 
 const state = {
   mode: 'build', selected: 'block', rotation: 0, snap: 1,
-  yaw: 0, pitch: 0, sensitivity: Number(sensitivityInput.value),
-  locked: false, driver: null, paused: false, lastWireUpdate: 0,
+  yaw: 0, pitch: 0, sensitivity: Number(sensitivityInput.value), locked: false,
+  driver: null, paused: false, lastWireUpdate: 0, ghost: null,
 };
 
-function showToast(text) {
+function toast(text) {
   toastBox.textContent = text;
   toastBox.classList.add('visible');
-  clearTimeout(showToast.timer);
-  showToast.timer = setTimeout(() => toastBox.classList.remove('visible'), 1600);
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => toastBox.classList.remove('visible'), 1600);
 }
 
 function updateStatus() {
@@ -73,154 +77,258 @@ function updateStatus() {
 function addLights() {
   scene.add(new THREE.HemisphereLight(0xd9f1ff, 0x27333c, 1.5));
   const sun = new THREE.DirectionalLight(0xffe8b4, 2.2);
-  sun.position.set(25, 35, 15); sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048); scene.add(sun);
+  sun.position.set(25, 35, 15);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  scene.add(sun);
 }
 
 function addGround() {
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(140, 1, 140), new THREE.MeshStandardMaterial({ color: 0x4c6654, roughness: 0.9 }));
-  mesh.position.y = -0.5; mesh.receiveShadow = true; scene.add(mesh);
+  mesh.position.y = -0.5;
+  mesh.receiveShadow = true;
+  scene.add(mesh);
   const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(0, -0.5, 0));
   world.createCollider(RAPIER.ColliderDesc.cuboid(70, 0.5, 70), body);
 }
 
-function material(type) {
+function materialFor(type, ghost = false) {
   const p = PARTS[type];
   return new THREE.MeshStandardMaterial({
-    color: p.color, roughness: 0.7,
+    color: p.color,
+    roughness: 0.7,
     metalness: ['metal', 'engine', 'largeEngine', 'motor'].includes(type) ? 0.7 : 0.12,
-    transparent: !!p.transparent, opacity: p.transparent ? 0.52 : 1,
+    transparent: ghost || !!p.transparent,
+    opacity: ghost ? 0.28 : p.transparent ? 0.52 : 1,
+    depthWrite: !ghost,
   });
 }
 
-function createMesh(type) {
+function geometryFor(type) {
   const p = PARTS[type];
-  const geometry = p.wheel ? new THREE.CylinderGeometry(0.36, 0.36, 0.2, 24) : new THREE.BoxGeometry(...p.size);
-  const mesh = new THREE.Mesh(geometry, material(type));
-  mesh.castShadow = true; mesh.receiveShadow = true;
-  if (p.wheel) mesh.rotation.z = Math.PI / 2;
+  return p.wheel ? new THREE.CylinderGeometry(0.36, 0.36, 0.2, 24) : new THREE.BoxGeometry(...p.size);
+}
+
+function createMesh(type, ghost = false) {
+  const mesh = new THREE.Mesh(geometryFor(type), materialFor(type, ghost));
+  mesh.castShadow = !ghost;
+  mesh.receiveShadow = !ghost;
+  if (PARTS[type].wheel) mesh.rotation.z = Math.PI / 2;
   return mesh;
 }
 
 function createBody(mesh, type) {
   const p = PARTS[type];
-  const d = RAPIER.RigidBodyDesc.dynamic()
+  const desc = RAPIER.RigidBodyDesc.dynamic()
     .setTranslation(mesh.position.x, mesh.position.y, mesh.position.z)
-    .setLinearDamping(0.55).setAngularDamping(0.65);
-  const body = world.createRigidBody(d);
-  const collider = p.wheel ? RAPIER.ColliderDesc.cylinder(0.1, 0.36) : RAPIER.ColliderDesc.cuboid(p.size[0] / 2, p.size[1] / 2, p.size[2] / 2);
-  collider.setFriction(p.wheel ? 1.4 : 0.8);
+    .setLinearDamping(0.42)
+    .setAngularDamping(0.7);
+  const body = world.createRigidBody(desc);
+  const collider = p.wheel
+    ? RAPIER.ColliderDesc.cylinder(0.1, 0.36)
+    : RAPIER.ColliderDesc.cuboid(p.size[0] / 2, p.size[1] / 2, p.size[2] / 2);
+  collider.setFriction(p.wheel ? 1.5 : 0.85);
   world.createCollider(collider, body);
   return body;
 }
 
-function posKey(v) { return `${Math.round(v.x)}:${Math.round(v.y)}:${Math.round(v.z)}`; }
+function positionKey(v) {
+  return `${Math.round(v.x / state.snap)}:${Math.round(v.y / state.snap)}:${Math.round(v.z / state.snap)}`;
+}
 
 function addPart(type, position, rotation = 0) {
   if (!PARTS[type]) return null;
-  const mesh = createMesh(type); mesh.position.copy(position); mesh.rotation.y = rotation;
-  const block = { id: crypto.randomUUID(), type, mesh, body: null, rotation, signal: 0, key: posKey(position) };
-  block.body = createBody(mesh, type);
-  mesh.userData.block = block;
-  blocks.push(block); scene.add(mesh); return block;
+  const mesh = createMesh(type);
+  mesh.position.copy(position);
+  mesh.rotation.y = rotation;
+  const part = { id: crypto.randomUUID(), type, mesh, body: null, rotation, signal: 0, key: positionKey(position) };
+  part.body = createBody(mesh, type);
+  mesh.userData.part = part;
+  blocks.push(part);
+  scene.add(mesh);
+  return part;
 }
 
-function removePart(block) {
-  if (!block) return;
-  scene.remove(block.mesh); world.removeRigidBody(block.body);
-  const i = blocks.indexOf(block); if (i >= 0) blocks.splice(i, 1);
+function removePart(part) {
+  if (!part) return;
+  scene.remove(part.mesh);
+  world.removeRigidBody(part.body);
+  const index = blocks.indexOf(part);
+  if (index >= 0) blocks.splice(index, 1);
 }
 
 function buildToolbar() {
   toolbar.innerHTML = '';
-  ORDER.forEach((type, i) => {
-    const button = document.createElement('button'); button.className = 'part-slot';
+  ORDER.forEach((type, index) => {
+    const button = document.createElement('button');
+    button.className = 'part-slot';
     const p = PARTS[type];
-    button.innerHTML = `<span class="part-color" style="background:#${p.color.toString(16).padStart(6, '0')}"></span><span>${i + 1}. ${p.label}</span>`;
-    button.onclick = () => selectPart(type, i); toolbar.appendChild(button);
+    button.innerHTML = `<span class="part-color" style="background:#${p.color.toString(16).padStart(6, '0')}"></span><span>${index + 1}. ${p.label}</span>`;
+    button.onclick = () => selectPart(type, index);
+    toolbar.appendChild(button);
   });
   selectPart('block', 0);
 }
 
 function selectPart(type, index = ORDER.indexOf(type)) {
   state.selected = type;
-  document.querySelectorAll('.part-slot').forEach((b, i) => b.classList.toggle('active', i === index));
+  document.querySelectorAll('.part-slot').forEach((button, i) => button.classList.toggle('active', i === index));
   updateStatus();
+  updateGhost();
 }
 
-function hitBlock() {
+function getHit() {
   raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
-  return raycaster.intersectObjects(blocks.map((b) => b.mesh))[0] || null;
+  return raycaster.intersectObjects(blocks.map((part) => part.mesh))[0] || null;
 }
 
-function place() {
-  const hit = hitBlock(); if (!hit) return;
-  const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld);
-  const point = hit.object.position.clone().add(normal.multiplyScalar(0.58));
-  const p = new THREE.Vector3(
-    Math.round(point.x / state.snap) * state.snap,
-    Math.round(point.y / state.snap) * state.snap,
-    Math.round(point.z / state.snap) * state.snap,
+function placementPosition() {
+  const hit = getHit();
+  if (!hit) return null;
+  const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+  const half = Math.max(...PARTS[state.selected].size) * 0.5;
+  const point = hit.point.clone().add(normal.multiplyScalar(half + 0.03));
+  const snap = state.snap;
+  return new THREE.Vector3(
+    Math.round(point.x / snap) * snap,
+    Math.round(point.y / snap) * snap,
+    Math.round(point.z / snap) * snap,
   );
-  if (blocks.some((b) => b.key === posKey(p))) return;
-  addPart(state.selected, p, state.rotation); showToast(`Placed ${PARTS[state.selected].label}`);
+}
+
+function updateGhost() {
+  ghostGroup.clear();
+  state.ghost = null;
+  if (state.mode !== 'build') return;
+  const ghost = createMesh(state.selected, true);
+  ghostGroup.add(ghost);
+  state.ghost = ghost;
+}
+
+function updateGhostPosition() {
+  if (!state.ghost || state.mode !== 'build') return;
+  const pos = placementPosition();
+  if (!pos) {
+    state.ghost.visible = false;
+    return;
+  }
+  state.ghost.visible = true;
+  state.ghost.position.copy(pos);
+  state.ghost.rotation.y = state.rotation;
+  if (PARTS[state.selected].wheel) state.ghost.rotation.z = Math.PI / 2;
+  state.ghost.material.color.set(blocks.some((part) => part.key === positionKey(pos)) ? 0xff5555 : PARTS[state.selected].color);
+}
+
+function placePart() {
+  const pos = placementPosition();
+  if (!pos || blocks.some((part) => part.key === positionKey(pos))) return;
+  addPart(state.selected, pos, state.rotation);
+  toast(`Placed ${PARTS[state.selected].label}`);
 }
 
 function removeTarget() {
-  const hit = hitBlock(); if (!hit) return;
-  const block = blocks.find((b) => b.mesh === hit.object);
-  if (block) { removePart(block); showToast(`Removed ${PARTS[block.type].label}`); }
+  const hit = getHit();
+  if (!hit) return;
+  const part = blocks.find((item) => item.mesh === hit.object);
+  if (part) {
+    removePart(part);
+    toast(`Removed ${PARTS[part.type].label}`);
+  }
 }
 
 function switchMode() {
   state.mode = state.mode === 'build' ? 'play' : 'build';
   if (state.mode === 'build' && state.driver) exitSeat();
-  showToast(`${state.mode === 'build' ? 'Build' : 'Play'} mode`); updateStatus();
+  updateGhost();
+  updateStatus();
+  toast(`${state.mode === 'build' ? 'Build' : 'Play'} mode`);
 }
 
 function nearestSeat() {
   const p = playerBody.translation();
-  return blocks.filter((b) => b.type === 'seat').sort((a, b) => {
+  return blocks.filter((part) => part.type === 'seat').sort((a, b) => {
     const da = Math.hypot(a.mesh.position.x - p.x, a.mesh.position.z - p.z);
     const db = Math.hypot(b.mesh.position.x - p.x, b.mesh.position.z - p.z);
     return da - db;
   })[0];
 }
 
-function enterSeat() {
-  if (state.driver) { exitSeat(); return; }
+function enterOrExitSeat() {
+  if (state.driver) {
+    exitSeat();
+    return;
+  }
   const seat = nearestSeat();
-  if (!seat) { showToast('No seat nearby'); return; }
-  const p = playerBody.translation();
-  if (Math.hypot(seat.mesh.position.x - p.x, seat.mesh.position.z - p.z) > 3.5) { showToast('Seat is too far away'); return; }
-  state.driver = seat; showToast('Entered seat'); updateStatus();
+  if (!seat) return toast('No seat nearby');
+  const player = playerBody.translation();
+  if (Math.hypot(seat.mesh.position.x - player.x, seat.mesh.position.z - player.z) > 3.5) return toast('Seat is too far away');
+  state.driver = seat;
+  toast('Entered seat');
+  updateStatus();
 }
 
 function exitSeat() {
   if (!state.driver) return;
   const p = state.driver.mesh.position.clone().add(new THREE.Vector3(0, 1.6, 2.4));
   playerBody.setTranslation({ x: p.x, y: p.y, z: p.z }, true);
-  state.driver = null; showToast('Exited seat'); updateStatus();
+  state.driver = null;
+  toast('Exited seat');
+  updateStatus();
+}
+
+function connectedVehicle() {
+  if (!state.driver) return [];
+  const rootPart = state.driver;
+  const result = new Set([rootPart]);
+  const queue = [rootPart];
+  while (queue.length) {
+    const current = queue.shift();
+    for (const candidate of blocks) {
+      if (result.has(candidate)) continue;
+      if (current.mesh.position.distanceTo(candidate.mesh.position) <= 1.75) {
+        result.add(candidate);
+        queue.push(candidate);
+      }
+    }
+  }
+  return [...result];
+}
+
+function applySuspension(wheel, chassis, dt) {
+  const delta = chassis.mesh.position.clone().sub(wheel.mesh.position);
+  const distance = delta.length();
+  if (!distance) return;
+  const axis = delta.normalize();
+  const target = 1.15;
+  const compression = target - distance;
+  const wheelVelocity = wheel.body.linvel();
+  const chassisVelocity = chassis.body.linvel();
+  const relativeSpeed = new THREE.Vector3(wheelVelocity.x - chassisVelocity.x, wheelVelocity.y - chassisVelocity.y, wheelVelocity.z - chassisVelocity.z).dot(axis);
+  const force = THREE.MathUtils.clamp(compression * 18 - relativeSpeed * 3.2, -20, 20) * dt;
+  const impulse = { x: axis.x * force, y: axis.y * force, z: axis.z * force };
+  wheel.body.applyImpulse(impulse, true);
+  chassis.body.applyImpulse({ x: -impulse.x, y: -impulse.y, z: -impulse.z }, true);
 }
 
 function vehicleStep(dt) {
   if (!state.driver) return;
+  const vehicle = connectedVehicle();
+  const wheels = vehicle.filter((part) => part.type === 'wheel');
+  const motors = vehicle.filter((part) => ['engine', 'largeEngine', 'motor'].includes(part.type));
+  const chassis = vehicle.find((part) => ['metal', 'wood', 'block', 'seat'].includes(part.type)) || state.driver;
   const throttle = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0);
   const steer = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0);
   const forward = new THREE.Vector3(Math.sin(state.yaw), 0, Math.cos(state.yaw));
-  const motors = blocks.filter((b) => ['engine', 'largeEngine', 'motor'].includes(b.type));
-  const wheels = blocks.filter((b) => b.type === 'wheel');
-  const power = motors.reduce((sum, b) => sum + PARTS[b.type].power, 0);
-  const signal = blocks.some((b) => b.type === 'button' && b.signal > 0) || blocks.some((b) => b.type === 'battery') ? 1 : 0;
-  const impulseStrength = throttle * power * signal * dt * 0.18;
+  const power = motors.reduce((sum, motor) => sum + PARTS[motor.type].power, 0);
+  const powered = vehicle.some((part) => part.type === 'battery' && part.signal > 0) || vehicle.some((part) => part.signal > 0);
+  const driveImpulse = throttle * power * (powered || !vehicle.some((part) => ['battery', 'switch', 'and', 'or', 'not', 'xor'].includes(part.type)) ? 1 : 0) * dt * 0.12;
 
   for (const wheel of wheels) {
-    wheel.body.applyImpulse({ x: forward.x * impulseStrength, y: 0, z: forward.z * impulseStrength }, true);
-    wheel.body.applyTorqueImpulse({ x: 0, y: steer * power * dt * 0.02, z: 0 }, true);
+    applySuspension(wheel, chassis, dt);
+    wheel.body.applyImpulse({ x: forward.x * driveImpulse, y: 0, z: forward.z * driveImpulse }, true);
+    wheel.body.applyTorqueImpulse({ x: 0, y: steer * power * dt * 0.025, z: 0 }, true);
   }
-  for (const motor of motors) {
-    motor.body.applyImpulse({ x: forward.x * impulseStrength * 0.3, y: 0, z: forward.z * impulseStrength * 0.3 }, true);
-  }
+  if (motors.length) chassis.body.applyImpulse({ x: forward.x * driveImpulse * 0.25, y: 0, z: forward.z * driveImpulse * 0.25 }, true);
 
   const p = state.driver.mesh.position;
   camera.position.lerp(new THREE.Vector3(p.x, p.y + 1.25, p.z + 0.7), 0.25);
@@ -234,101 +342,146 @@ function playerStep() {
   const velocity = playerBody.linvel();
   playerBody.setLinvel({ x: input.x * 5.8, y: velocity.y, z: input.z * 5.8 }, true);
   if (keys.has('Space') && playerBody.translation().y < 1.8 && Math.abs(velocity.y) < 0.35) playerBody.applyImpulse({ x: 0, y: 6, z: 0 }, true);
-  const p = playerBody.translation(); camera.position.set(p.x, p.y + 1.2, p.z); camera.rotation.set(state.pitch, state.yaw, 0, 'YXZ');
+  const p = playerBody.translation();
+  camera.position.set(p.x, p.y + 1.2, p.z);
+  camera.rotation.set(state.pitch, state.yaw, 0, 'YXZ');
+}
+
+function nearbyPowerNodes(part) {
+  return blocks.filter((candidate) => candidate !== part && ['battery', 'switch', 'and', 'or', 'not', 'xor', 'engine', 'largeEngine', 'motor'].includes(candidate.type) && candidate.mesh.position.distanceTo(part.mesh.position) <= 3.2);
 }
 
 function evaluateLogic() {
-  const sources = blocks.filter((b) => ['battery', 'button'].includes(b.type));
-  const gates = blocks.filter((b) => b.type === 'logic');
-  for (const block of blocks) block.signal = 0;
-  for (const source of sources) source.signal = source.type === 'battery' || keys.has('KeyL') ? 1 : 0;
-  for (const gate of gates) {
-    const inputs = sources.filter((s) => s.mesh.position.distanceTo(gate.mesh.position) < 3.2);
-    gate.signal = inputs.length >= 2 && inputs.every((x) => x.signal > 0) ? 1 : 0;
+  for (const part of blocks) part.signal = 0;
+  const activeSwitch = keys.has('KeyL');
+  for (const part of blocks) {
+    if (part.type === 'battery') part.signal = 1;
+    if (part.type === 'switch') part.signal = activeSwitch ? 1 : 0;
   }
-  for (const block of blocks) {
-    if (['engine', 'largeEngine', 'motor'].includes(block.type)) {
-      block.signal = blocks.some((x) => x.signal > 0 && x.mesh.position.distanceTo(block.mesh.position) < 3.2) ? 1 : 0;
+  for (let pass = 0; pass < 3; pass++) {
+    for (const gate of blocks.filter((part) => PARTS[part.type].gate)) {
+      const inputs = nearbyPowerNodes(gate).map((part) => part.signal > 0);
+      if (PARTS[gate.type].gate === 'and') gate.signal = inputs.length >= 2 && inputs.every(Boolean) ? 1 : 0;
+      if (PARTS[gate.type].gate === 'or') gate.signal = inputs.some(Boolean) ? 1 : 0;
+      if (PARTS[gate.type].gate === 'not') gate.signal = inputs.length > 0 && !inputs[0] ? 1 : 0;
+      if (PARTS[gate.type].gate === 'xor') gate.signal = inputs.filter(Boolean).length === 1 ? 1 : 0;
     }
+  }
+  for (const output of blocks.filter((part) => ['engine', 'largeEngine', 'motor'].includes(part.type))) {
+    output.signal = nearbyPowerNodes(output).some((part) => part.signal > 0) ? 1 : 0;
   }
 }
 
 function drawWires() {
   wireGroup.clear();
-  const nodes = blocks.filter((b) => ['battery', 'button', 'logic', 'engine', 'largeEngine', 'motor'].includes(b.type));
-  const points = [];
+  const nodes = blocks.filter((part) => ['battery', 'switch', 'and', 'or', 'not', 'xor', 'engine', 'largeEngine', 'motor'].includes(part.type));
+  const positions = [];
   for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) {
-    if (nodes[i].mesh.position.distanceTo(nodes[j].mesh.position) <= 3.2) points.push(nodes[i].mesh.position, nodes[j].mesh.position);
+    if (nodes[i].mesh.position.distanceTo(nodes[j].mesh.position) <= 3.2) positions.push(nodes[i].mesh.position, nodes[j].mesh.position);
   }
-  if (!points.length) return;
+  if (!positions.length) return;
   const values = [];
-  for (const p of points) values.push(p.x, p.y, p.z);
-  const geometry = new THREE.BufferGeometry(); geometry.setAttribute('position', new THREE.Float32BufferAttribute(values, 3));
+  for (let i = 0; i < positions.length; i += 2) {
+    values.push(positions[i].x, positions[i].y, positions[i].z, positions[i + 1].x, positions[i + 1].y, positions[i + 1].z);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(values, 3));
   wireGroup.add(new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({ color: 0xffd45f, linewidth: 2 })));
 }
 
 function saveBuild() {
-  localStorage.setItem('construct-lab-save-v2', JSON.stringify(blocks.map((b) => ({ type: b.type, x: b.mesh.position.x, y: b.mesh.position.y, z: b.mesh.position.z, rotation: b.rotation }))));
-  showToast('Build saved');
+  const data = blocks.map((part) => ({ type: part.type, x: part.mesh.position.x, y: part.mesh.position.y, z: part.mesh.position.z, rotation: part.rotation }));
+  localStorage.setItem('construct-lab-save-v3', JSON.stringify(data));
+  toast('Build saved');
 }
 
 function loadBuild() {
-  const raw = localStorage.getItem('construct-lab-save-v2'); if (!raw) { showToast('No save found'); return; }
-  for (const b of [...blocks]) removePart(b);
+  const raw = localStorage.getItem('construct-lab-save-v3');
+  if (!raw) return toast('No save found');
+  for (const part of [...blocks]) removePart(part);
   for (const item of JSON.parse(raw)) addPart(item.type, new THREE.Vector3(item.x, item.y, item.z), item.rotation || 0);
-  showToast('Build loaded');
+  toast('Build loaded');
 }
 
-function keyDown(e) {
-  keys.add(e.code);
-  if (e.code === 'Tab') { e.preventDefault(); switchMode(); }
-  if (e.code === 'KeyE' && state.mode === 'play') enterSeat();
-  if (e.code === 'KeyK') saveBuild(); if (e.code === 'KeyO') loadBuild();
-  if (e.code === 'KeyR' && state.mode === 'build') { state.rotation += Math.PI / 2; showToast('Rotated 90°'); }
-  if (e.code === 'F1') settings.classList.toggle('hidden');
-  if (e.code.startsWith('Digit')) { const i = Number(e.code.slice(5)) - 1; if (ORDER[i]) selectPart(ORDER[i], i); }
+function onKeyDown(event) {
+  keys.add(event.code);
+  if (event.code === 'Tab') { event.preventDefault(); switchMode(); }
+  if (event.code === 'KeyE' && state.mode === 'play') enterOrExitSeat();
+  if (event.code === 'KeyK') saveBuild();
+  if (event.code === 'KeyO') loadBuild();
+  if (event.code === 'KeyP') { state.paused = !state.paused; toast(state.paused ? 'Paused' : 'Resumed'); }
+  if (event.code === 'KeyR' && state.mode === 'build') { state.rotation += Math.PI / 2; updateGhostPosition(); toast('Rotated 90°'); }
+  if (event.code === 'F1') settingsPanel.classList.toggle('hidden');
+  if (event.code.startsWith('Digit')) {
+    const index = Number(event.code.slice(5)) - 1;
+    if (ORDER[index]) selectPart(ORDER[index], index);
+  }
 }
-function keyUp(e) { keys.delete(e.code); }
-function mouseMove(e) {
+
+function onKeyUp(event) { keys.delete(event.code); }
+function onMouseMove(event) {
   if (!state.locked) return;
-  state.yaw -= e.movementX * state.sensitivity; state.pitch -= e.movementY * state.sensitivity;
-  state.pitch = THREE.MathUtils.clamp(state.pitch, -1.45, 1.45);
+  state.yaw -= event.movementX * state.sensitivity;
+  state.pitch = THREE.MathUtils.clamp(state.pitch - event.movementY * state.sensitivity, -1.45, 1.45);
 }
-function mouseDown(e) {
+function onMouseDown(event) {
   if (!state.locked) { renderer.domElement.requestPointerLock(); return; }
-  if (state.mode === 'build') e.button === 0 ? place() : e.button === 2 ? removeTarget() : null;
+  if (state.mode === 'build') {
+    if (event.button === 0) placePart();
+    if (event.button === 2) removeTarget();
+  }
 }
 
 const playerBody = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(0, 2, 8).setLinearDamping(0.3).setEnabledRotations(false, true, false));
 world.createCollider(RAPIER.ColliderDesc.capsule(0.45, 0.55), playerBody);
 
-document.addEventListener('keydown', keyDown); document.addEventListener('keyup', keyUp); document.addEventListener('mousemove', mouseMove);
-renderer.domElement.addEventListener('mousedown', mouseDown); document.addEventListener('contextmenu', (e) => e.preventDefault());
+document.addEventListener('keydown', onKeyDown);
+document.addEventListener('keyup', onKeyUp);
+document.addEventListener('mousemove', onMouseMove);
+document.addEventListener('contextmenu', (event) => event.preventDefault());
+renderer.domElement.addEventListener('mousedown', onMouseDown);
 document.addEventListener('pointerlockchange', () => { state.locked = document.pointerLockElement === renderer.domElement; });
 sensitivityInput.oninput = () => { state.sensitivity = Number(sensitivityInput.value); };
 gravityInput.oninput = () => { world.gravity = { x: 0, y: Number(gravityInput.value), z: 0 }; };
-snapInput.oninput = () => { state.snap = Number(snapInput.value); updateStatus(); };
-$('close-settings').onclick = () => settings.classList.add('hidden');
+snapInput.oninput = () => { state.snap = Number(snapInput.value); updateGhostPosition(); updateStatus(); };
+$('close-settings').onclick = () => settingsPanel.classList.add('hidden');
 addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
 
-addLights(); addGround();
-addPart('wood', new THREE.Vector3(0, 1, 1)); addPart('wood', new THREE.Vector3(1, 1, 1)); addPart('wood', new THREE.Vector3(-1, 1, 1));
-addPart('seat', new THREE.Vector3(0, 2, 1)); addPart('engine', new THREE.Vector3(0, 1.2, -1)); addPart('battery', new THREE.Vector3(0, 2.1, -2));
+addLights();
+addGround();
+addPart('wood', new THREE.Vector3(0, 1, 1));
+addPart('wood', new THREE.Vector3(1, 1, 1));
+addPart('wood', new THREE.Vector3(-1, 1, 1));
+addPart('seat', new THREE.Vector3(0, 2, 1));
+addPart('engine', new THREE.Vector3(0, 1.2, -1));
+addPart('battery', new THREE.Vector3(0, 2.1, -2));
 for (const p of [[-1.5, 0.5, -0.7], [1.5, 0.5, -0.7], [-1.5, 0.5, 1.8], [1.5, 0.5, 1.8]]) addPart('wheel', new THREE.Vector3(...p));
-buildToolbar(); updateStatus();
+buildToolbar();
+updateGhost();
+updateStatus();
 
 function frame() {
   requestAnimationFrame(frame);
   const dt = Math.min(clock.getDelta(), 0.05);
+  updateGhostPosition();
   if (!state.paused) {
     if (state.mode === 'play') { playerStep(); vehicleStep(dt); }
     evaluateLogic();
     world.step();
-    for (const b of blocks) { const p = b.body.translation(); b.mesh.position.set(p.x, p.y, p.z); const q = b.body.rotation(); b.mesh.quaternion.set(q.x, q.y, q.z, q.w); }
-    if (clock.elapsedTime - state.lastWireUpdate > 0.12) { drawWires(); state.lastWireUpdate = clock.elapsedTime; }
+    for (const part of blocks) {
+      const p = part.body.translation();
+      part.mesh.position.set(p.x, p.y, p.z);
+      const q = part.body.rotation();
+      part.mesh.quaternion.set(q.x, q.y, q.z, q.w);
+    }
+    if (clock.elapsedTime - state.lastWireUpdate > 0.12) {
+      drawWires();
+      state.lastWireUpdate = clock.elapsedTime;
+    }
   }
   renderer.render(scene, camera);
 }
+
 frame();
-setTimeout(() => showToast('Prototype ready'), 200);
+setTimeout(() => toast('Prototype ready'), 200);
 window.__constructLab = { save: saveBuild, load: loadBuild, blocks, state };
