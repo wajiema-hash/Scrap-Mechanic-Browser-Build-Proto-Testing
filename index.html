@@ -1,23 +1,22 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-  <head>
-    <title>Home</title>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width" />
-    <!--
-      Need a visual blank slate?
-      Remove all code in `styles.css`!
-    -->
-    <link rel="stylesheet" href="styles.css" />
-    <script type="module" src="script.js"></script>
-  </head>
-  <body>
-    <nav>
-      <a href="/" aria-current="page">Home</a>
-      <a href="/page2.html">Other page</a>
-    </nav>
-    <main>
-      <h1>Home page</h1>
-    </main>
-  </body>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Construct Lab 3D</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="game"></div>
+  <div id="hud">
+    <header><strong>CONSTRUCT LAB</strong><span id="mode">BUILD MODE</span><span id="fps">60 FPS</span></header>
+    <div id="crosshair">+</div>
+    <aside id="help"><b>Controls</b><br>WASD move/drive · Mouse look<br>Space jump · E enter/exit seat<br>Tab build/play · LMB place/use<br>RMB delete · R rotate · 1-9 select<br>P pause · K save · O load</aside>
+    <section id="toolbar"></section>
+    <div id="status">Loading physics…</div>
+  </div>
+  <div id="settings" class="panel hidden"><h2>Settings</h2><label>Mouse sensitivity <input id="sensitivity" type="range" min="0.001" max="0.006" step="0.0002" value="0.0025"></label><label>Gravity <input id="gravity" type="range" min="-20" max="0" step="0.5" value="-9.81"></label><label>Physics quality <select id="quality"><option value="1">High</option><option value="2">Balanced</option><option value="4">Fast</option></select></label><button id="closeSettings">Close</button></div>
+  <div id="message"></div>
+  <script type="module" src="script.js"></script>
+</body>
 </html>
